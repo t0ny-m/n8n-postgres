@@ -1,0 +1,114 @@
+services:
+  # Init-container for creating n8n user and schema in PostgreSQL
+  n8n-db-init:
+    image: postgres:15-alpine
+    container_name: n8n-db-init
+    restart: "no" # Starts once and stops
+    env_file:
+      - .env
+      - ../supabase/.env # Reading POSTGRES_PASSWORD from Supabase
+    networks:
+      - default
+    command: |
+      sh -c '
+      echo "=== Initializing n8n database ==="
+
+      # Wait for database availability
+      until pg_isready -h "$${DB_POSTGRESDB_HOST}" -p "$${DB_POSTGRESDB_PORT}" -U postgres; do
+        echo "Waiting for PostgreSQL to be ready..."
+        sleep 2
+      done
+
+      echo "PostgreSQL is ready. Creating n8n user and schema..."
+
+      # First session: postgres user for basic setup
+      # Create or update user password
+      PGPASSWORD="$${POSTGRES_PASSWORD}" psql -h "$${DB_POSTGRESDB_HOST}" -p "$${DB_POSTGRESDB_PORT}" -U postgres -d postgres \
+        -c "ALTER USER \"$${DB_POSTGRESDB_USER}\" WITH PASSWORD '\''$${DB_POSTGRESDB_PASSWORD}'\''" || \
+      PGPASSWORD="$${POSTGRES_PASSWORD}" psql -h "$${DB_POSTGRESDB_HOST}" -p "$${DB_POSTGRESDB_PORT}" -U postgres -d postgres \
+        -c "CREATE USER \"$${DB_POSTGRESDB_USER}\" WITH PASSWORD '\''$${DB_POSTGRESDB_PASSWORD}'\''"
+
+      PGPASSWORD="$${POSTGRES_PASSWORD}" psql -h "$${DB_POSTGRESDB_HOST}" -p "$${DB_POSTGRESDB_PORT}" -U postgres -d postgres <<EOF
+      -- Schema creation
+      CREATE SCHEMA IF NOT EXISTS "$${DB_POSTGRESDB_SCHEMA}";
+
+      -- Granting database connection rights
+      GRANT CONNECT ON DATABASE "$${DB_POSTGRESDB_DATABASE}" TO "$${DB_POSTGRESDB_USER}";
+      GRANT ALL PRIVILEGES ON DATABASE "$${DB_POSTGRESDB_DATABASE}" TO "$${DB_POSTGRESDB_USER}";
+
+      -- Granting permissions for schema
+      GRANT ALL PRIVILEGES ON SCHEMA "$${DB_POSTGRESDB_SCHEMA}" TO "$${DB_POSTGRESDB_USER}";
+
+      -- Rights to future tables and sequences
+      ALTER DEFAULT PRIVILEGES IN SCHEMA "$${DB_POSTGRESDB_SCHEMA}"
+        GRANT ALL ON TABLES TO "$${DB_POSTGRESDB_USER}";
+
+      ALTER DEFAULT PRIVILEGES IN SCHEMA "$${DB_POSTGRESDB_SCHEMA}"
+        GRANT ALL ON SEQUENCES TO "$${DB_POSTGRESDB_USER}";
+
+      -- Setting search_path for user
+      ALTER ROLE "$${DB_POSTGRESDB_USER}" SET search_path = "$${DB_POSTGRESDB_SCHEMA}", public;
+      EOF
+
+      echo "Running ownership and extension setup as supabase_admin..."
+
+      # Second session: supabase_admin for ownership and extensions
+      PGPASSWORD="$${POSTGRES_PASSWORD}" psql -h "$${DB_POSTGRESDB_HOST}" -p "$${DB_POSTGRESDB_PORT}" -U supabase_admin -d postgres <<EOF
+
+      -- Schema Owner Setting (requires supabase_admin)
+      ALTER SCHEMA "$${DB_POSTGRESDB_SCHEMA}" OWNER TO "$${DB_POSTGRESDB_USER}";
+
+      -- Creating the vector extension (if needed for n8n)
+      CREATE EXTENSION IF NOT EXISTS vector;
+
+      EOF
+
+      echo "=== n8n database initialization completed successfully ==="
+      echo "=== Init completed ==="
+      exit 0
+      '
+
+  # n8n - the main container
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+
+    deploy:
+      resources:
+        #        limits:
+        #          cpus: '2'
+        #          memory: 1024M
+    stop_grace_period: 60s
+
+    env_file:
+      - .env
+
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./files:/files
+      - ./backup:/backup
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:5678/healthz" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+    networks:
+      - default
+
+    depends_on:
+      n8n-db-init:
+        condition: service_completed_successfully
+
+volumes:
+  n8n_data:
+
+
+networks:
+  default:
+    external: true
+    name: n8n-stack-network

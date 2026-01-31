@@ -1,0 +1,56 @@
+# Environment files (contain secrets)
+.env
+**/.env
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE / Editor junk
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Docker / System folders that should be ignored entirely
+**/node_modules/
+**/tmp/
+**/temp/
+
+# --- DATA VOLUMES (Keeping structure, ignoring content) ---
+
+# Database Data (NO .gitkeep - breaks PostgreSQL initdb!)
+**/volumes/db/data/*
+
+# Storage
+**/volumes/storage/*
+!**/volumes/storage/.gitkeep
+
+# Logs (keep vector.yml)
+**/volumes/logs/*
+
+!**/volumes/logs/vector.yml
+
+# Proxy / LetsEncrypt
+**/proxy/npm/letsencrypt/*
+**/proxy/npm/data/*
+
+# n8n local files
+n8n/files/*
+n8n/backup/*
+!n8n/files/.gitkeep
+!n8n/backup/.gitkeep
+
+# Backups
+#backups/**
+!backups/**/.gitkeep
+**/backups/*
+!backups/.gitkeep
+# --- CONFIGURATIONS (DO NOT IGNORE) ---
+!**/volumes/db/*.sql
+!**/volumes/api/kong.yml
+!**/volumes/pooler/pooler.exs
+
+# Other junk
+*.log
