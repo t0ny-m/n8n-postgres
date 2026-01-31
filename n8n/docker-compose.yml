@@ -1,25 +1,14 @@
-version: '3.8'
-
-volumes:
-  db_storage:
-  n8n_data:
-
-
 networks:
   default:
-    name: n8n-pg-network
+    name: n8n-stack-network
 
 services:
   n8n-db:
     image: postgres:16
     container_name: n8n-db
     restart: always
-    environment:
-      - POSTGRES_USER
-      - POSTGRES_PASSWORD
-      - POSTGRES_DB
-      - POSTGRES_NON_ROOT_USER
-      - POSTGRES_NON_ROOT_PASSWORD
+    env_file:
+      - .env
     volumes:
       - db_storage:/var/lib/postgresql/data
       - ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh
