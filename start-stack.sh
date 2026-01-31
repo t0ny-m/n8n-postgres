@@ -667,8 +667,9 @@ main() {
     fi
     
     # Step 3.5: Pre-pull images sequentially (to avoid IO spike)
-    if $START_SUPABASE || $START_N8N; then
-        print_header "Image Pre-pull"
+    # Step 3.5: Pre-pull images sequentially (to avoid IO spike)
+    if $START_SUPABASE; then
+        print_header "Image Pre-pull: Supabase"
         if check_dir "$SUPABASE_DIR"; then
             cd "$SUPABASE_DIR"
             print_info "Pre-pulling heavy images one by one..."
@@ -677,6 +678,22 @@ main() {
                 echo -n "Pulling $service... "
                 $DOCKER_COMPOSE pull -q "$service" && echo -e "${GREEN}DONE${NC}" || echo -e "${RED}SKIPPED${NC}"
             done
+        fi
+    fi
+
+    if $START_N8N; then
+        print_header "Image Pre-pull: n8n"
+        if check_dir "$N8N_DIR"; then
+            cd "$N8N_DIR"
+            if [ -f ".env" ]; then
+                set -a
+                source .env
+                set +a
+                print_info "Pre-pulling n8n images..."
+                $DOCKER_COMPOSE pull -q
+            else
+                print_warning "n8n/.env file not found! Skipping pre-pull."
+            fi
         fi
     fi
     
@@ -737,10 +754,14 @@ main() {
             echo ""
             SUPABASE_STARTED=true
         fi
-
+    fi
     
     # 5.2: n8n (Independent)
     if $START_N8N; then
+        # Ensure env is loaded for this context if not already
+        if [ -d "$N8N_DIR" ] && [ -f "$N8N_DIR/.env" ]; then
+             set -a; source "$N8N_DIR/.env"; set +a
+        fi
         start_service "n8n" "$N8N_DIR" "n8n"
     fi
     
