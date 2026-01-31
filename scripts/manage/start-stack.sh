@@ -35,6 +35,22 @@ NETWORK_NAME="n8n-stack-network"
 # Docker compose command (will be set by check_docker)
 DOCKER_COMPOSE=""
 
+# Global flags
+RECREATE=false
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -r|--recreate)
+            RECREATE=true
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -153,6 +169,40 @@ check_docker() {
     print_success "Docker ${DOCKER_VERSION} is running"
     print_success "Docker Compose ${COMPOSE_VERSION} is available"
     echo ""
+}
+
+# ============================================================================
+ # System Check
+# ============================================================================
+
+check_system() {
+    print_header "System Check"
+    
+    # Check RAM
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        TOTAL_RAM=$(free -m | awk '/^Mem:/{print $2}')
+        TOTAL_SWAP=$(free -m | awk '/^Swap:/{print $2}')
+        
+        print_info "Total RAM: ${TOTAL_RAM}MB"
+        print_info "Total Swap: ${TOTAL_SWAP}MB"
+        
+        if [ "$TOTAL_RAM" -lt 1500 ] && [ "$TOTAL_SWAP" -lt 1024 ]; then
+            print_error "LOW MEMORY DETECTED!"
+            echo -e "${YELLOW}Your server has less than 1.5GB RAM and very little Swap.${NC}"
+            echo -e "${YELLOW}Running the full stack WILL likely cause the server to hang.${NC}"
+            echo ""
+            echo "Recommendation: Enable at least 2GB of Swap space."
+            echo "  sudo fallocate -l 2G /swapfile"
+            echo "  sudo chmod 600 /swapfile"
+            echo "  sudo mkswap /swapfile"
+            echo "  sudo swapon /swapfile"
+            echo ""
+            read -rp "Continue anyway? [y/N]: " response
+            if [[ ! "$response" =~ ^[Yy]$ ]]; then
+                exit 1
+            fi
+        fi
+    fi
 }
 
 # ============================================================================
@@ -416,12 +466,13 @@ check_dir() {
     return 0
 }
 
-# Start service with recreation
+# Start service with recreation logic
 start_service() {
     local service_name=$1
     local service_dir=$2
     local description=$3
     local wait_healthy=$4  # Optional: container name to wait for
+    local extra_args=$5    # Optional: extra args for docker compose up
     
     print_header "Starting: $description"
     
@@ -433,12 +484,15 @@ start_service() {
     print_info "Working directory: $service_dir"
     cd "$service_dir"
     
-    # Recreate containers
-    print_info "Stopping existing containers..."
-    $DOCKER_COMPOSE down 2>/dev/null || true
+    # Recreate containers only if requested
+    if $RECREATE; then
+        print_info "Stopping existing containers (--recreate flag is set)..."
+        $DOCKER_COMPOSE down 2>/dev/null || true
+    fi
     
     print_info "Starting containers..."
-    $DOCKER_COMPOSE up -d
+    # --no-recreate is implied by default for existing non-changed containers
+    $DOCKER_COMPOSE up -d $extra_args
     
     # Wait for health check if specified
     if [ -n "$wait_healthy" ]; then
@@ -575,6 +629,9 @@ main() {
     # Step 0: Check Docker
     check_docker
     
+    # Step 0.5: Check System
+    check_system
+    
     # Step 1: Create network
     create_network
     
@@ -585,11 +642,12 @@ main() {
         select_services_simple
     fi
     
+    
     # Step 3: Summary
     print_header "Selected Services"
     echo "The following services will be started:"
     echo ""
-    $START_N8N && echo "  • n8n (+ minimal Supabase: db, vector)"
+    $START_N8N && echo "  • n8n (+ independent Postgres: n8n-db)"
     $START_SUPABASE && echo "  • Supabase (full stack)"
     $START_NPM && echo "  • Nginx Proxy Manager"
     $START_CLOUDFLARED && echo "  • Cloudflared Tunnel"
@@ -608,6 +666,20 @@ main() {
         exit 0
     fi
     
+    # Step 3.5: Pre-pull images sequentially (to avoid IO spike)
+    if $START_SUPABASE || $START_N8N; then
+        print_header "Image Pre-pull"
+        if check_dir "$SUPABASE_DIR"; then
+            cd "$SUPABASE_DIR"
+            print_info "Pre-pulling heavy images one by one..."
+            # Getting only active services and pulling them sequentially
+            for service in $($DOCKER_COMPOSE config --services); do
+                echo -n "Pulling $service... "
+                $DOCKER_COMPOSE pull -q "$service" && echo -e "${GREEN}DONE${NC}" || echo -e "${RED}SKIPPED${NC}"
+            done
+        fi
+    fi
+    
     # Step 4: Check ports and firewall
     REQUIRED_PORTS=$(get_required_ports)
     if [ -n "$REQUIRED_PORTS" ]; then
@@ -620,54 +692,71 @@ main() {
     
     # Step 5: Start services in correct order
     
-    # 4.1: Supabase (if needed)
+    # 5.1: Supabase (if needed)
     SUPABASE_STARTED=false
     
     if $START_SUPABASE; then
-        # Full Supabase stack
-        start_service "supabase" "$SUPABASE_DIR" "Supabase (full stack)"
-        wait_for_healthy "supabase-db" 60
-        SUPABASE_STARTED=true
-    elif $START_N8N; then
-        # Minimal Supabase for n8n (only db dependencies)
-        print_header "Starting: Supabase (minimal for n8n)"
+        # Full Supabase stack - Staggered startup
+        print_header "Starting: Supabase (full stack - staggered)"
         
         if check_dir "$SUPABASE_DIR"; then
             cd "$SUPABASE_DIR"
             
-            print_info "Stopping existing Supabase containers..."
-            $DOCKER_COMPOSE down 2>/dev/null || true
+            if $RECREATE; then
+                print_info "Stopping existing Supabase full stack (--recreate)..."
+                $DOCKER_COMPOSE down 2>/dev/null || true
+            fi
             
-            print_info "Starting minimal Supabase (vector, db)..."
+            # Phase 1: Infrastructure (Foundation)
+            print_info "Phase 1: Starting foundation (vector, db, kong)..."
             $DOCKER_COMPOSE up -d vector db
-            
             wait_for_healthy "supabase-db" 60
+            $DOCKER_COMPOSE up -d kong
             
-            print_success "Minimal Supabase started successfully"
+            # Phase 2: Core services (API Layer)
+            print_info "Phase 2: Starting API layer (auth, rest, imgproxy)..."
+            sleep 8
+            $DOCKER_COMPOSE up -d auth rest imgproxy
+            
+            # Phase 3: Utility services (Storage & UI)
+            print_info "Phase 3: Starting utility services (meta, studio, storage)..."
+            sleep 8
+            $DOCKER_COMPOSE up -d meta studio storage
+            
+            # Phase 4: Compute & Realtime
+            print_info "Phase 4: Starting compute & realtime (realtime, supavisor, functions)..."
+            sleep 8
+            $DOCKER_COMPOSE up -d realtime supavisor functions
+            
+            # Phase 5: Everything else
+            print_info "Phase 5: Starting remaining services..."
+            sleep 5
+            $DOCKER_COMPOSE up -d
+            
+            print_success "Supabase started successfully"
             echo ""
             SUPABASE_STARTED=true
         fi
-    fi
+
     
-    # 4.2: n8n (depends on Supabase db)
+    # 5.2: n8n (Independent)
     if $START_N8N; then
-        if ! $SUPABASE_STARTED; then
-            print_error "Cannot start n8n: Supabase database not started"
-        else
-            start_service "n8n" "$N8N_DIR" "n8n"
-        fi
+        start_service "n8n" "$N8N_DIR" "n8n"
     fi
     
-    # 4.3: Independent services (no waiting needed)
+    # 5.3: Independent services (with small delays to reduce IO spike)
     if $START_NPM; then
+        sleep 2
         start_service "npm" "$NPM_DIR" "Nginx Proxy Manager"
     fi
 
     if $START_CLOUDFLARED; then
+        sleep 2
         start_service "cloudflared" "$CLOUDFLARED_DIR" "Cloudflared Tunnel"
     fi
 
     if $START_PORTAINER; then
+        sleep 2
         start_service "portainer" "$PORTAINER_DIR" "Portainer"
     fi
 

@@ -647,7 +647,7 @@ main() {
     print_header "Selected Services"
     echo "The following services will be started:"
     echo ""
-    $START_N8N && echo "  • n8n (+ minimal Supabase: db, vector)"
+    $START_N8N && echo "  • n8n (+ independent Postgres: n8n-db)"
     $START_SUPABASE && echo "  • Supabase (full stack)"
     $START_NPM && echo "  • Nginx Proxy Manager"
     $START_CLOUDFLARED && echo "  • Cloudflared Tunnel"
@@ -737,38 +737,11 @@ main() {
             echo ""
             SUPABASE_STARTED=true
         fi
-    elif $START_N8N; then
-        # Minimal Supabase for n8n (only db dependencies)
-        print_header "Starting: Supabase (minimal for n8n)"
-        
-        if check_dir "$SUPABASE_DIR"; then
-            cd "$SUPABASE_DIR"
-            
-            if $RECREATE; then
-                print_info "Stopping existing Supabase containers (--recreate)..."
-                $DOCKER_COMPOSE down 2>/dev/null || true
-            fi
-            
-            print_info "Starting minimal Supabase (vector, db)..."
-            $DOCKER_COMPOSE up -d vector db
-            
-            wait_for_healthy "supabase-db" 60
-            
-            print_success "Minimal Supabase started successfully"
-            echo ""
-            SUPABASE_STARTED=true
-        fi
-    fi
+
     
-    # 5.2: n8n (depends on Supabase db)
+    # 5.2: n8n (Independent)
     if $START_N8N; then
-        if ! $SUPABASE_STARTED; then
-            print_error "Cannot start n8n: Supabase database not started"
-        else
-            # Give the DB another moment to settle
-            sleep 2
-            start_service "n8n" "$N8N_DIR" "n8n"
-        fi
+        start_service "n8n" "$N8N_DIR" "n8n"
     fi
     
     # 5.3: Independent services (with small delays to reduce IO spike)

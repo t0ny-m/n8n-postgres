@@ -256,9 +256,13 @@ docker cp n8n:/backup ./backups/n8n/
 ```bash
 # Create backup
 docker exec supabase-db pg_dump -U postgres postgres > backups/supabase/backup-$(date +%Y%m%d).sql
+```
 
-# Or backup specific schema
-docker exec supabase-db pg_dump -U postgres -n n8n postgres > backups/n8n-schema-$(date +%Y%m%d).sql
+### Backup n8n database
+
+```bash
+# Create backup
+docker exec n8n-db pg_dump -U postgres_user n8n > backups/n8n/n8n-db-$(date +%Y%m%d).sql
 ```
 
 ### Restore database
@@ -267,8 +271,8 @@ docker exec supabase-db pg_dump -U postgres -n n8n postgres > backups/n8n-schema
 # Restore full database
 docker exec -i supabase-db psql -U postgres postgres < backups/supabase/backup-20260124.sql
 
-# Restore specific schema
-docker exec -i supabase-db psql -U postgres postgres < backups/n8n-schema-20260124.sql
+# Restore n8n database
+docker exec -i n8n-db psql -U postgres_user -d n8n < backups/n8n/n8n-db-20260124.sql
 ```
 
 ## Troubleshooting
@@ -346,41 +350,25 @@ deploy:
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│                 Internet                    │
-└────────────────┬────────────────────────────┘
-                 │
-        ┌────────┴────────┐
-        │  Cloudflare     │
-        │  (Optional)     │
-        └────────┬────────┘
-                 │
-        ┌────────┴────────┐
-        │      NPM        │ :80, :443
-        │  (Optional)     │
-        └────────┬────────┘
-                 │
-     ┌───────────┴───────────┐
-     │                       │
-┌────┴─────┐         ┌──────┴──────┐
-│   n8n    │ :5678   │  Supabase   │ :8000
-│          │         │             │ :3000
-│  ┌───────┴──┐      │  ┌────────┐ │
-│  │ n8n-db-  │      │  │   DB   │ │
-│  │  init    │──────┼─▶│        │ │
-│  └──────────┘      │  └────────┘ │
-└────────────────────┴─────────────┘
-          │
-          └─────────────────┐
-              n8n-stack-network
+      ┌───────────┴───────────┐
+      │                       │
+ ┌────┴─────┐           ┌─────┴──────┐
+ │   n8n    │ :5678     │  Supabase  │ :8000
+ │          │           │            │ :3000
+ │ ┌──────┐ │           │ ┌────────┐ │
+ │ │n8n-db│◀┼────────── │ │   DB   │ │
+ │ └──────┘ │           │ └────────┘ │
+ └──────────┘           └────────────┘
+           │
+           └─────────────────┐
+               n8n-stack-network
 ```
 
 ### Component Relationships
 
-- **n8n** uses PostgreSQL from Supabase (separate schema `n8n`)
-- **n8n-db-init** automatically creates database user and schema on first start
-- **Minimal Supabase** (vector, db, analytics) starts automatically when n8n is selected
-- **Full Supabase** includes all services (studio, auth, rest, realtime, storage, etc.)
+- **n8n** uses its own **n8n-db** (PostgreSQL 16)
+- **Supabase** (Optional) is now completely independent
+- **n8n-db** is initialized automatically using `init-data.sh`
 - **NPM** and **Cloudflared** are optional for reverse proxy/SSL
 - All services communicate via `n8n-stack-network` Docker network
 
@@ -390,6 +378,7 @@ deploy:
 n8n-stack/
 ├── start-stack.sh              # Main startup script
 ├── README.md
+├── MIGRATION_GUIDE.md          # Migration from Supabase to n8n-PG
 ├── n8n/
 │   ├── docker-compose.yml
 │   ├── .env.example
@@ -450,4 +439,3 @@ For issues and questions:
 - Open an issue on GitHub
 - Check [n8n community forum](https://community.n8n.io/)
 - Check [Supabase discussions](https://github.com/supabase/supabase/discussions)
-```
